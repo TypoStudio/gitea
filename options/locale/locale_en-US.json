@@ -1612,6 +1612,8 @@
   "repo.issues.max_pinned": "You can't pin more issues",
   "repo.issues.pin_comment": "pinned this %s",
   "repo.issues.unpin_comment": "unpinned this %s",
+  "repo.issues.filter_comments_only": "Comments only",
+  "repo.issues.filter_all_activity": "All activity",
   "repo.issues.lock": "Lock conversation",
   "repo.issues.unlock": "Unlock conversation",
   "repo.issues.lock_duplicate": "An issue cannot be locked twice.",

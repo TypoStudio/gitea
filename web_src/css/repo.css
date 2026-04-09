@@ -25,6 +25,19 @@
   width: calc(100% - 316px);
 }
 
+.timeline-filter-placeholder {
+  padding: 2px 0 2px 52px;
+}
+
+.timeline-filter-dots {
+  display: inline-block;
+  color: var(--color-text-light-3);
+  font-size: 1.2em;
+  line-height: 1;
+  letter-spacing: 0;
+  writing-mode: vertical-rl;
+}
+
 .issue-content-right {
   margin: 0 !important;
   width: 300px;

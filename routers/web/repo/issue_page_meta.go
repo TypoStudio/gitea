@@ -26,6 +26,8 @@ type issueSidebarMilestoneData struct {
 	SelectedMilestoneID int64
 	OpenMilestones      []*issues_model.Milestone
 	ClosedMilestones    []*issues_model.Milestone
+	OrgOpenMilestones   []*issues_model.Milestone
+	OrgClosedMilestones []*issues_model.Milestone
 }
 
 type issueSidebarAssigneesData struct {
@@ -146,6 +148,18 @@ func (d *IssuePageMetaData) retrieveMilestonesDataForIssueWriter(ctx *context.Co
 	if err != nil {
 		ctx.ServerError("GetMilestones", err)
 		return
+	}
+
+	// Load org milestones if repo belongs to an organization
+	if err = d.Repository.LoadOwner(ctx); err == nil && d.Repository.Owner.IsOrganization() {
+		d.MilestonesData.OrgOpenMilestones, _ = db.Find[issues_model.Milestone](ctx, issues_model.FindMilestoneOptions{
+			OrgID:    d.Repository.OwnerID,
+			IsClosed: optional.Some(false),
+		})
+		d.MilestonesData.OrgClosedMilestones, _ = db.Find[issues_model.Milestone](ctx, issues_model.FindMilestoneOptions{
+			OrgID:    d.Repository.OwnerID,
+			IsClosed: optional.Some(true),
+		})
 	}
 }
 

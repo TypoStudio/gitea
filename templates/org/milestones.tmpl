@@ -1,0 +1,135 @@
+{{template "base/head" .}}
+<div role="main" aria-label="{{.Title}}" class="page-content organization milestones">
+	{{template "org/header" .}}
+	<div class="ui container">
+		{{if .IsOrganizationOwner}}
+		<div class="flex-text-block tw-justify-between tw-mb-4">
+			<div class="small-menu-items ui compact tiny menu list-header-toggle">
+				<a class="item{{if not .IsShowClosed}} active{{end}}" href="{{.MilestoneLink}}?state=open&q={{.Keyword}}&sort={{.SortType}}">
+					{{svg "octicon-milestone" 16 "tw-mr-2"}}
+					{{ctx.Locale.PrettyNumber .OpenCount}}&nbsp;{{ctx.Locale.Tr "repo.issues.open_title"}}
+				</a>
+				<a class="item{{if .IsShowClosed}} active{{end}}" href="{{.MilestoneLink}}?state=closed&q={{.Keyword}}&sort={{.SortType}}">
+					{{svg "octicon-check" 16 "tw-mr-2"}}
+					{{ctx.Locale.PrettyNumber .ClosedCount}}&nbsp;{{ctx.Locale.Tr "repo.issues.closed_title"}}
+				</a>
+			</div>
+			<a class="ui small primary button" href="{{.MilestoneLink}}/new">{{ctx.Locale.Tr "org.milestones.new"}}</a>
+		</div>
+		{{else}}
+		<div class="small-menu-items ui compact tiny menu list-header-toggle tw-mb-4">
+			<a class="item{{if not .IsShowClosed}} active{{end}}" href="{{.MilestoneLink}}?state=open&q={{.Keyword}}&sort={{.SortType}}">
+				{{svg "octicon-milestone" 16 "tw-mr-2"}}
+				{{ctx.Locale.PrettyNumber .OpenCount}}&nbsp;{{ctx.Locale.Tr "repo.issues.open_title"}}
+			</a>
+			<a class="item{{if .IsShowClosed}} active{{end}}" href="{{.MilestoneLink}}?state=closed&q={{.Keyword}}&sort={{.SortType}}">
+				{{svg "octicon-check" 16 "tw-mr-2"}}
+				{{ctx.Locale.PrettyNumber .ClosedCount}}&nbsp;{{ctx.Locale.Tr "repo.issues.closed_title"}}
+			</a>
+		</div>
+		{{end}}
+
+		{{template "base/alert" .}}
+
+		<div class="list-header">
+			<form class="list-header-search ui form ignore-dirty" action="{{.MilestoneLink}}" method="get">
+				<input type="hidden" name="state" value="{{.State}}">
+				<input type="hidden" name="sort" value="{{.SortType}}">
+				{{template "shared/search/combo" dict "Value" .Keyword "Placeholder" (ctx.Locale.Tr "repo.milestones.search_milestones")}}
+			</form>
+			<div class="list-header-filters ui secondary menu tw-m-0">
+				<div class="item ui small dropdown jump">
+					<span class="text">{{ctx.Locale.Tr "repo.issues.filter_sort"}}</span>
+					{{svg "octicon-triangle-down" 14 "dropdown icon"}}
+					<div class="menu">
+						<a class="{{if eq .SortType ""}}active {{end}}item" href="{{.MilestoneLink}}?q={{.Keyword}}&sort=&state={{.State}}">{{ctx.Locale.Tr "repo.milestones.filter_sort.earliest_due_data"}}</a>
+						<a class="{{if eq .SortType "furthestduedate"}}active {{end}}item" href="{{.MilestoneLink}}?q={{.Keyword}}&sort=furthestduedate&state={{.State}}">{{ctx.Locale.Tr "repo.milestones.filter_sort.latest_due_date"}}</a>
+						<a class="{{if eq .SortType "leastcomplete"}}active {{end}}item" href="{{.MilestoneLink}}?q={{.Keyword}}&sort=leastcomplete&state={{.State}}">{{ctx.Locale.Tr "repo.milestones.filter_sort.least_complete"}}</a>
+						<a class="{{if eq .SortType "mostcomplete"}}active {{end}}item" href="{{.MilestoneLink}}?q={{.Keyword}}&sort=mostcomplete&state={{.State}}">{{ctx.Locale.Tr "repo.milestones.filter_sort.most_complete"}}</a>
+						<a class="{{if eq .SortType "mostissues"}}active {{end}}item" href="{{.MilestoneLink}}?q={{.Keyword}}&sort=mostissues&state={{.State}}">{{ctx.Locale.Tr "repo.milestones.filter_sort.most_issues"}}</a>
+						<a class="{{if eq .SortType "leastissues"}}active {{end}}item" href="{{.MilestoneLink}}?q={{.Keyword}}&sort=leastissues&state={{.State}}">{{ctx.Locale.Tr "repo.milestones.filter_sort.least_issues"}}</a>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<div class="milestone-list">
+			{{range .Milestones}}
+				<li class="milestone-card">
+					<div class="milestone-header">
+						<h3 class="flex-text-block tw-m-0">
+							{{svg "octicon-milestone" 16}}
+							<span class="tw-break-anywhere">{{.Name}}</span>
+						</h3>
+						<div class="tw-flex tw-items-center tw-gap-2">
+							<span>{{.Completeness}}%</span>
+							<progress value="{{.Completeness}}" max="100"></progress>
+						</div>
+					</div>
+					<div class="milestone-toolbar">
+						<div class="group">
+							{{if .UpdatedUnix}}
+								<div class="flex-text-block">
+									{{svg "octicon-clock"}}
+									{{ctx.Locale.Tr "repo.milestones.update_ago" (DateUtils.TimeSince .UpdatedUnix)}}
+								</div>
+							{{end}}
+							<div class="flex-text-block">
+								{{if .IsClosed}}
+									{{svg "octicon-clock" 14}}
+									{{ctx.Locale.Tr "repo.milestones.closed" (DateUtils.TimeSince .ClosedDateUnix)}}
+								{{else if .DeadlineString}}
+									<span class="flex-text-inline {{if .IsOverdue}}tw-text-red{{end}}">
+										{{svg "octicon-calendar" 14}}
+										{{DateUtils.AbsoluteShort (.DeadlineString|DateUtils.ParseLegacy)}}
+									</span>
+								{{else}}
+									{{svg "octicon-calendar" 14}}
+									{{ctx.Locale.Tr "repo.milestones.no_due_date"}}
+								{{end}}
+							</div>
+						</div>
+						{{if $.IsOrganizationOwner}}
+							<div class="group">
+								<a class="flex-text-inline" href="{{$.MilestoneLink}}/{{.ID}}/edit">{{svg "octicon-pencil" 14}}{{ctx.Locale.Tr "repo.issues.label_edit"}}</a>
+								{{if .IsClosed}}
+									<a class="link-action flex-text-inline" href data-url="{{$.MilestoneLink}}/{{.ID}}/open">{{svg "octicon-check" 14}}{{ctx.Locale.Tr "repo.milestones.open"}}</a>
+								{{else}}
+									<a class="link-action flex-text-inline" href data-url="{{$.MilestoneLink}}/{{.ID}}/close">{{svg "octicon-x" 14}}{{ctx.Locale.Tr "repo.milestones.close"}}</a>
+								{{end}}
+								<a class="link-action flex-text-inline tw-text-red" href data-modal-confirm="#org-milestone-delete-modal" data-url="{{$.MilestoneLink}}/delete?id={{.ID}}">{{svg "octicon-trash" 14}}{{ctx.Locale.Tr "repo.issues.label_delete"}}</a>
+							</div>
+						{{end}}
+					</div>
+					{{if .Content}}
+						<div class="render-content markup">{{.RenderedContent}}</div>
+					{{end}}
+				</li>
+			{{else}}
+				{{if and (eq .OpenCount 0) (eq .ClosedCount 0)}}
+					<div class="empty-placeholder">
+						{{svg "octicon-milestone" 48}}
+						<h2>{{ctx.Locale.Tr "org.milestones.no_milestones"}}</h2>
+					</div>
+				{{else}}
+					<div class="empty-placeholder">
+						{{svg "octicon-search" 48}}
+						<h2>{{ctx.Locale.Tr "repo.projects.no_results"}}</h2>
+					</div>
+				{{end}}
+			{{end}}
+
+			{{template "base/paginate" .}}
+		</div>
+	</div>
+</div>
+
+{{if .IsOrganizationOwner}}
+<div class="ui small modal" id="org-milestone-delete-modal">
+	<div class="header">{{svg "octicon-trash"}} {{ctx.Locale.Tr "repo.milestones.deletion"}}</div>
+	<div class="content"><p>{{ctx.Locale.Tr "repo.milestones.deletion_desc"}}</p></div>
+	{{template "base/modal_actions_confirm" .}}
+</div>
+{{end}}
+
+{{template "base/footer" .}}

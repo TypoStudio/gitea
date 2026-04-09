@@ -1315,6 +1315,7 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 				m.Get("/choose", repo.NewIssueChooseTemplate)
 			})
 			m.Get("/search", repo.SearchRepoIssuesJSON)
+			m.Get("/accessible-repos", repo.ListAccessibleReposForIssueMove)
 		}, reqUnitIssuesReader)
 
 		addIssuesPullsUpdateRoutes := func() {
@@ -1346,6 +1347,8 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 				m.Post("/lock", reqRepoIssuesOrPullsWriter, web.Bind(forms.IssueLockForm{}), repo.LockIssue)
 				m.Post("/unlock", reqRepoIssuesOrPullsWriter, repo.UnlockIssue)
 				m.Post("/delete", reqRepoAdmin, repo.DeleteIssue)
+				m.Post("/move_repo", reqRepoAdmin, repo.MoveIssueToRepo)
+				m.Post("/copy_repo", reqRepoAdmin, repo.CopyIssueToRepo)
 				m.Post("/content-history/soft-delete", repo.SoftDeleteContentHistory)
 			})
 

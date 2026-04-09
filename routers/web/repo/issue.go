@@ -14,6 +14,7 @@ import (
 
 	"code.gitea.io/gitea/models/db"
 	issues_model "code.gitea.io/gitea/models/issues"
+	perm_model "code.gitea.io/gitea/models/perm"
 	access_model "code.gitea.io/gitea/models/perm/access"
 	project_model "code.gitea.io/gitea/models/project"
 	"code.gitea.io/gitea/models/renderhelper"
@@ -647,4 +648,414 @@ func attachmentsHTML(ctx *context.Context, attachments []*repo_model.Attachment,
 		return ""
 	}
 	return attachHTML
+}
+
+// MoveIssueToRepo moves an issue to another repository.
+func MoveIssueToRepo(ctx *context.Context) {
+	issue := GetActionIssue(ctx)
+	if ctx.Written() {
+		return
+	}
+
+	if issue.IsPull {
+		ctx.Flash.Error("Cannot move a pull request to another repository.")
+		ctx.JSONRedirect(issue.Link())
+		return
+	}
+
+	newRepoFullName := ctx.FormString("new_repo")
+	if newRepoFullName == "" {
+		ctx.Flash.Error("Target repository is required.")
+		ctx.JSONRedirect(issue.Link())
+		return
+	}
+
+	parts := strings.SplitN(newRepoFullName, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		ctx.Flash.Error("Target repository must be in 'owner/repo' format.")
+		ctx.JSONRedirect(issue.Link())
+		return
+	}
+
+	newRepo, err := repo_model.GetRepositoryByOwnerAndName(ctx, parts[0], parts[1])
+	if err != nil {
+		if repo_model.IsErrRepoNotExist(err) {
+			ctx.Flash.Error("Target repository not found.")
+			ctx.JSONRedirect(issue.Link())
+			return
+		}
+		ctx.ServerError("GetRepositoryByOwnerAndName", err)
+		return
+	}
+
+	isSameRepo := newRepo.ID == ctx.Repo.Repository.ID
+
+	// Same repo: nothing to move, just redirect
+	if isSameRepo {
+		ctx.Flash.Info("Issue is already in this repository.")
+		ctx.JSONRedirect(issue.Link())
+		return
+	}
+
+	// Check permission: user must be able to write issues in the target repo
+	canWrite, err := access_model.HasAccessUnit(ctx, ctx.Doer, newRepo, unit.TypeIssues, perm_model.AccessModeWrite)
+	if err != nil {
+		ctx.ServerError("HasAccessUnit", err)
+		return
+	}
+	if !canWrite {
+		ctx.Flash.Error("You don't have permission to create issues in the target repository.")
+		ctx.JSONRedirect(issue.Link())
+		return
+	}
+
+	// Collect original labels, milestone, and project info before moving (for copy options)
+	var origLabels []*issues_model.Label
+	var origMilestoneName string
+
+	origLabels, err = issues_model.GetLabelsByIssueID(ctx, issue.ID)
+	if err != nil {
+		ctx.ServerError("GetLabelsByIssueID", err)
+		return
+	}
+
+	if issue.MilestoneID > 0 {
+		origMilestone, err := issues_model.GetMilestoneByRepoID(ctx, issue.RepoID, issue.MilestoneID)
+		if err == nil {
+			origMilestoneName = origMilestone.Name
+		}
+	}
+
+	var origProjectTitle string
+	if err := issue.LoadProject(ctx); err == nil && issue.Project != nil {
+		origProjectTitle = issue.Project.Title
+	}
+
+	oldRepoID := issue.RepoID
+	dbCtx, committer, err := db.TxContext(ctx)
+	if err != nil {
+		ctx.ServerError("TxContext", err)
+		return
+	}
+	defer committer.Close()
+
+	// Get next issue index for the new repo
+	newIndex, err := db.GetNextResourceIndex(dbCtx, "issue_index", newRepo.ID)
+	if err != nil {
+		ctx.ServerError("GetNextResourceIndex", err)
+		return
+	}
+
+	// Update issue's RepoID and Index
+	issue.RepoID = newRepo.ID
+	issue.Index = newIndex
+	if _, err := db.GetEngine(dbCtx).ID(issue.ID).Cols("repo_id", "`index`").Update(issue); err != nil {
+		ctx.ServerError("UpdateIssue", err)
+		return
+	}
+
+	// Clear labels (they belong to the old repo)
+	if _, err := db.GetEngine(dbCtx).Where("issue_id = ?", issue.ID).Delete(&issues_model.IssueLabel{}); err != nil {
+		ctx.ServerError("ClearIssueLabels", err)
+		return
+	}
+
+	// Clear milestone
+	if issue.MilestoneID > 0 {
+		if _, err := db.GetEngine(dbCtx).ID(issue.ID).Cols("milestone_id").Update(&issues_model.Issue{MilestoneID: 0}); err != nil {
+			ctx.ServerError("ClearMilestone", err)
+			return
+		}
+	}
+
+	// Clear project
+	if _, err := db.GetEngine(dbCtx).Where("issue_id = ?", issue.ID).Delete(&project_model.ProjectIssue{}); err != nil {
+		ctx.ServerError("ClearProject", err)
+		return
+	}
+
+	// Copy labels to new repo (best-effort)
+	if ctx.FormBool("copy_labels") && len(origLabels) > 0 {
+		for _, origLabel := range origLabels {
+			newLabel, err := issues_model.GetLabelInRepoByName(dbCtx, newRepo.ID, origLabel.Name)
+			if err != nil {
+				// Label not found in target repo, create it
+				newLabel = &issues_model.Label{
+					RepoID:      newRepo.ID,
+					Name:        origLabel.Name,
+					Exclusive:   origLabel.Exclusive,
+					Description: origLabel.Description,
+					Color:       origLabel.Color,
+				}
+				if err := issues_model.NewLabel(dbCtx, newLabel); err != nil {
+					continue // best-effort: skip on error
+				}
+			}
+			if _, err := db.GetEngine(dbCtx).Insert(&issues_model.IssueLabel{
+				IssueID: issue.ID,
+				LabelID: newLabel.ID,
+			}); err != nil {
+				continue // best-effort
+			}
+		}
+	}
+
+	// Copy milestone to new repo (best-effort)
+	if ctx.FormBool("copy_milestone") && origMilestoneName != "" {
+		newMilestone, err := issues_model.GetMilestoneByRepoIDANDName(dbCtx, newRepo.ID, origMilestoneName)
+		if err != nil {
+			// Milestone not found in target repo, create it
+			newMilestone = &issues_model.Milestone{
+				RepoID: newRepo.ID,
+				Name:   origMilestoneName,
+			}
+			if err := issues_model.NewMilestone(dbCtx, newMilestone); err != nil {
+				newMilestone = nil // best-effort: skip on error
+			}
+		}
+		if newMilestone != nil {
+			if _, err := db.GetEngine(dbCtx).ID(issue.ID).Cols("milestone_id").Update(&issues_model.Issue{MilestoneID: newMilestone.ID}); err != nil {
+				// best-effort: ignore
+				_ = err
+			}
+		}
+	}
+
+	// Copy project to new repo (best-effort)
+	if ctx.FormBool("copy_project") && origProjectTitle != "" {
+		// Search for a project with the same title in the new repo
+		var newProjectID int64
+		projects, err := db.Find[project_model.Project](dbCtx, project_model.SearchOptions{
+			RepoID:   newRepo.ID,
+			IsClosed: optional.Some(false),
+			Type:     project_model.TypeRepository,
+		})
+		if err == nil {
+			for _, p := range projects {
+				if p.Title == origProjectTitle {
+					newProjectID = p.ID
+					break
+				}
+			}
+		}
+		if newProjectID == 0 {
+			// Create project in target repo
+			newProject := &project_model.Project{
+				Title:     origProjectTitle,
+				RepoID:    newRepo.ID,
+				CreatorID: ctx.Doer.ID,
+				Type:      project_model.TypeRepository,
+			}
+			if err := project_model.NewProject(dbCtx, newProject); err == nil {
+				newProjectID = newProject.ID
+			}
+		}
+		if newProjectID > 0 {
+			// Get default column
+			newProject, err := project_model.GetProjectByID(dbCtx, newProjectID)
+			if err == nil {
+				defaultColumn, err := newProject.MustDefaultColumn(dbCtx)
+				if err == nil {
+					if _, err := db.GetEngine(dbCtx).Insert(&project_model.ProjectIssue{
+						IssueID:         issue.ID,
+						ProjectID:       newProjectID,
+						ProjectColumnID: defaultColumn.ID,
+					}); err != nil {
+						// best-effort: ignore
+						_ = err
+					}
+				}
+			}
+		}
+	}
+
+	// Decrement old repo issue count
+	if err := issues_model.DecrRepoIssueNumbers(dbCtx, oldRepoID, issue.IsPull, true, issue.IsClosed); err != nil {
+		ctx.ServerError("DecrRepoIssueNumbers", err)
+		return
+	}
+
+	// Increment new repo issue count
+	if err := issues_model.IncrRepoIssueNumbers(dbCtx, newRepo.ID, issue.IsPull, true); err != nil {
+		ctx.ServerError("IncrRepoIssueNumbers", err)
+		return
+	}
+	if issue.IsClosed {
+		if err := issues_model.IncrRepoIssueNumbers(dbCtx, newRepo.ID, issue.IsPull, false); err != nil {
+			ctx.ServerError("IncrRepoIssueNumbers", err)
+			return
+		}
+	}
+
+	if err := committer.Commit(); err != nil {
+		ctx.ServerError("Commit", err)
+		return
+	}
+
+	log.Info("Issue [%d] moved from repo [%d] to repo [%d] by user [%d]", issue.ID, ctx.Repo.Repository.ID, newRepo.ID, ctx.Doer.ID)
+
+	ctx.Flash.Success("Issue moved successfully.")
+	ctx.JSONRedirect(fmt.Sprintf("%s/issues/%d", newRepo.Link(), issue.Index))
+}
+
+// CopyIssueToRepo copies an issue to another repository (without deleting the original)
+func CopyIssueToRepo(ctx *context.Context) {
+	issue := GetActionIssue(ctx)
+	if ctx.Written() {
+		return
+	}
+
+	if issue.IsPull {
+		ctx.Flash.Error("Cannot copy a pull request to another repository.")
+		ctx.JSONRedirect(issue.Link())
+		return
+	}
+
+	newRepoFullName := ctx.FormString("new_repo")
+	if newRepoFullName == "" {
+		ctx.Flash.Error("Target repository is required.")
+		ctx.JSONRedirect(issue.Link())
+		return
+	}
+
+	parts := strings.SplitN(newRepoFullName, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		ctx.Flash.Error("Target repository must be in 'owner/repo' format.")
+		ctx.JSONRedirect(issue.Link())
+		return
+	}
+
+	newRepo, err := repo_model.GetRepositoryByOwnerAndName(ctx, parts[0], parts[1])
+	if err != nil {
+		if repo_model.IsErrRepoNotExist(err) {
+			ctx.Flash.Error("Target repository not found.")
+			ctx.JSONRedirect(issue.Link())
+			return
+		}
+		ctx.ServerError("GetRepositoryByOwnerAndName", err)
+		return
+	}
+
+	// Check permission: user must be able to write issues in the target repo
+	canWrite, err := access_model.HasAccessUnit(ctx, ctx.Doer, newRepo, unit.TypeIssues, perm_model.AccessModeWrite)
+	if err != nil {
+		ctx.ServerError("HasAccessUnit", err)
+		return
+	}
+	if !canWrite {
+		ctx.Flash.Error("You don't have permission to create issues in the target repository.")
+		ctx.JSONRedirect(issue.Link())
+		return
+	}
+
+	dbCtx, committer, err := db.TxContext(ctx)
+	if err != nil {
+		ctx.ServerError("TxContext", err)
+		return
+	}
+	defer committer.Close()
+
+	// Get next issue index for the new repo
+	newIndex, err := db.GetNextResourceIndex(dbCtx, "issue_index", newRepo.ID)
+	if err != nil {
+		ctx.ServerError("GetNextResourceIndex", err)
+		return
+	}
+
+	// Create a new issue in the target repo
+	newIssue := &issues_model.Issue{
+		RepoID:   newRepo.ID,
+		Index:    newIndex,
+		PosterID: issue.PosterID,
+		Title:    issue.Title,
+		Content:  issue.Content,
+	}
+	if _, err := db.GetEngine(dbCtx).Insert(newIssue); err != nil {
+		ctx.ServerError("InsertIssue", err)
+		return
+	}
+
+	// Increment new repo issue count
+	if err := issues_model.IncrRepoIssueNumbers(dbCtx, newRepo.ID, false, true); err != nil {
+		ctx.ServerError("IncrRepoIssueNumbers", err)
+		return
+	}
+
+	if err := committer.Commit(); err != nil {
+		ctx.ServerError("Commit", err)
+		return
+	}
+
+	log.Info("Issue [%d] copied to repo [%d] as issue [%d] by user [%d]", issue.ID, newRepo.ID, newIssue.ID, ctx.Doer.ID)
+
+	ctx.Flash.Success("Issue copied successfully.")
+	ctx.JSONRedirect(fmt.Sprintf("%s/issues/%d", newRepo.Link(), newIssue.Index))
+}
+
+// ListAccessibleReposForIssueMove returns a JSON list of repos where the user can write issues
+func ListAccessibleReposForIssueMove(ctx *context.Context) {
+	q := ctx.FormString("q")
+
+	repos, _, err := repo_model.SearchRepository(ctx, repo_model.SearchRepoOptions{
+		ListOptions: db.ListOptions{
+			Page:     1,
+			PageSize: 20,
+		},
+		Actor:              ctx.Doer,
+		Keyword:            q,
+		Collaborate:        optional.Some(false),
+		IncludeDescription: false,
+		Archived:           optional.Some(false),
+	})
+	if err != nil {
+		ctx.ServerError("SearchRepository", err)
+		return
+	}
+
+	// Also search collaborative repos
+	collabRepos, _, err := repo_model.SearchRepository(ctx, repo_model.SearchRepoOptions{
+		ListOptions: db.ListOptions{
+			Page:     1,
+			PageSize: 20,
+		},
+		Actor:              ctx.Doer,
+		Keyword:            q,
+		Collaborate:        optional.Some(true),
+		UnitType:           unit.TypeIssues,
+		IncludeDescription: false,
+		Archived:           optional.Some(false),
+	})
+	if err != nil {
+		ctx.ServerError("SearchRepository", err)
+		return
+	}
+
+	// Merge and deduplicate
+	seen := make(map[int64]bool)
+	type repoInfo struct {
+		FullName string `json:"full_name"`
+		ID       int64  `json:"id"`
+	}
+	var result []repoInfo
+
+	for _, r := range append(repos, collabRepos...) {
+		if seen[r.ID] {
+			continue
+		}
+		// Check write permission for issues
+		canWrite, err := access_model.HasAccessUnit(ctx, ctx.Doer, r, unit.TypeIssues, perm_model.AccessModeWrite)
+		if err != nil {
+			continue
+		}
+		if !canWrite {
+			continue
+		}
+		seen[r.ID] = true
+		result = append(result, repoInfo{
+			FullName: r.FullName(),
+			ID:       r.ID,
+		})
+	}
+
+	ctx.JSON(http.StatusOK, result)
 }

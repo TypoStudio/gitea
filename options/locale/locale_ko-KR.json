@@ -1602,6 +1602,8 @@
   "repo.issues.max_pinned": "더 이상 이슈를 고정할 수 없습니다",
   "repo.issues.pin_comment": "이 %s를 고정함",
   "repo.issues.unpin_comment": "이 %s를 고정 해제함",
+  "repo.issues.filter_comments_only": "댓글만 보기",
+  "repo.issues.filter_all_activity": "전체 활동",
   "repo.issues.lock": "대화 잠금",
   "repo.issues.unlock": "대화 잠금 해제",
   "repo.issues.lock_duplicate": "이슈는 중복해서 잠글 수 없습니다.",

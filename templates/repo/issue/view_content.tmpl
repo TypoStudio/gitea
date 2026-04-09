@@ -65,6 +65,12 @@
 				</div>
 			</div>
 
+			<div class="tw-flex tw-justify-end tw-mb-2">
+				<div class="ui tiny buttons" id="timeline-filter-buttons">
+					<button class="ui button active" id="timeline-filter-all" onclick="timelineFilter('all')">{{ctx.Locale.Tr "repo.issues.filter_all_activity"}}</button>
+					<button class="ui button" id="timeline-filter-comments" onclick="timelineFilter('comments')">{{ctx.Locale.Tr "repo.issues.filter_comments_only"}}</button>
+				</div>
+			</div>
 			{{template "repo/issue/view_content/comments" .}}
 			<div class="timeline-item tw-hidden" id="timeline-comments-end"></div>
 
@@ -169,6 +175,49 @@
 	</form>
 </template>
 
+<script>
+function timelineFilter(mode, save) {
+	const timeline = document.querySelector('.ui.timeline');
+	if (!timeline) return;
+
+	// Remove existing placeholders
+	timeline.querySelectorAll(':scope > .timeline-filter-placeholder').forEach(function(el) { el.remove(); });
+
+	// Reset visibility
+	timeline.querySelectorAll(':scope > .timeline-item.event, :scope > .timeline-item-group').forEach(function(el) {
+		el.style.display = '';
+	});
+
+	if (mode === 'comments') {
+		timeline.querySelectorAll(':scope > .timeline-item.event, :scope > .timeline-item-group').forEach(function(el) {
+			el.style.display = 'none';
+		});
+		// Insert one placeholder per consecutive run of hidden items
+		var inRun = false;
+		Array.from(timeline.children).forEach(function(el) {
+			if (el.style.display === 'none') {
+				if (!inRun) {
+					inRun = true;
+					var ph = document.createElement('div');
+					ph.className = 'timeline-filter-placeholder';
+					ph.innerHTML = '<span class="timeline-filter-dots">&#8942;</span>';
+					timeline.insertBefore(ph, el);
+				}
+			} else {
+				inRun = false;
+			}
+		});
+	}
+
+	document.getElementById('timeline-filter-all').classList.toggle('active', mode === 'all');
+	document.getElementById('timeline-filter-comments').classList.toggle('active', mode === 'comments');
+	if (save !== false) localStorage.setItem('timeline-filter', mode);
+}
+(function() {
+	var saved = localStorage.getItem('timeline-filter') || 'all';
+	timelineFilter(saved, false);
+})();
+</script>
 {{template "repo/issue/view_content/reference_issue_dialog" .}}
 {{template "shared/user/block_user_dialog" .}}
 

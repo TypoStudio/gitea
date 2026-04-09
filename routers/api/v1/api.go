@@ -1504,6 +1504,11 @@ func Routes() *web.Router {
 								Delete(reqToken(), repo.ClearIssueLabels)
 							m.Delete("/{id}", reqToken(), repo.DeleteIssueLabel)
 						})
+						m.Combo("/project").
+								Post(reqToken(), bind(api.IssueProjectOption{}), repo.AddIssueProject).
+								Delete(reqToken(), repo.DeleteIssueProject)
+						m.Post("/move", reqToken(), mustNotBeArchived, bind(api.MoveIssueOption{}), repo.MoveIssueAPI)
+						m.Post("/copy", reqToken(), bind(api.CopyIssueOption{}), repo.CopyIssueAPI)
 						m.Group("/times", func() {
 							m.Combo("").
 								Get(repo.ListTrackedTimes).
@@ -1640,6 +1645,13 @@ func Routes() *web.Router {
 				m.Combo("/{id}").Get(reqToken(), org.GetLabel).
 					Patch(reqToken(), reqOrgOwnership(), bind(api.EditLabelOption{}), org.EditLabel).
 					Delete(reqToken(), reqOrgOwnership(), org.DeleteLabel)
+			})
+			m.Group("/milestones", func() {
+				m.Combo("").Get(org.ListMilestones).
+					Post(reqToken(), reqOrgOwnership(), bind(api.CreateMilestoneOption{}), org.CreateMilestone)
+				m.Combo("/{id}").Get(org.GetMilestone).
+					Patch(reqToken(), reqOrgOwnership(), bind(api.EditMilestoneOption{}), org.EditMilestone).
+					Delete(reqToken(), reqOrgOwnership(), org.DeleteMilestone)
 			})
 			m.Group("/hooks", func() {
 				m.Combo("").Get(org.ListHooks).

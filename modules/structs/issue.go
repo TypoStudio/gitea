@@ -280,3 +280,33 @@ type IssueMeta struct {
 type LockIssueOption struct {
 	Reason string `json:"lock_reason"`
 }
+
+// MoveIssueOption options for moving an issue to another repo
+// swagger:model
+type MoveIssueOption struct {
+	// target repository in "owner/repo" format
+	// required: true
+	NewRepo string `json:"new_repo" binding:"Required"`
+	// copy labels to the target repo
+	CopyLabels bool `json:"copy_labels"`
+	// copy milestone to the target repo
+	CopyMilestone bool `json:"copy_milestone"`
+	// copy project to the target repo
+	CopyProject bool `json:"copy_project"`
+}
+
+// CopyIssueOption options for copying an issue to another repo
+// swagger:model
+type CopyIssueOption struct {
+	// target repository in "owner/repo" format
+	// required: true
+	NewRepo string `json:"new_repo" binding:"Required"`
+	// copy labels to the target repo
+	CopyLabels bool `json:"copy_labels"`
+	// copy milestone to the target repo
+	CopyMilestone bool `json:"copy_milestone"`
+	// copy project to the target repo
+	CopyProject bool `json:"copy_project"`
+	// dependency type: "", "original_blocks_copy", "copy_blocks_original"
+	DepType string `json:"dep_type"`
+}

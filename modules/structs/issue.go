@@ -79,6 +79,7 @@ type Issue struct {
 
 	PullRequest *PullRequestMeta `json:"pull_request"`
 	Repo        *RepositoryMeta  `json:"repository"`
+	Project     *Project         `json:"project"`
 
 	PinOrder int `json:"pin_order"`
 	// The version of the issue content for optimistic locking

@@ -1504,7 +1504,10 @@ func Routes() *web.Router {
 								Delete(reqToken(), repo.ClearIssueLabels)
 							m.Delete("/{id}", reqToken(), repo.DeleteIssueLabel)
 						})
-						m.Group("/times", func() {
+						m.Combo("/project").
+								Post(reqToken(), bind(api.IssueProjectOption{}), repo.AddIssueProject).
+								Delete(reqToken(), repo.DeleteIssueProject)
+							m.Group("/times", func() {
 							m.Combo("").
 								Get(repo.ListTrackedTimes).
 								Post(bind(api.AddTimeOption{}), repo.AddTime).
@@ -1571,6 +1574,12 @@ func Routes() *web.Router {
 						Patch(reqToken(), reqRepoWriter(unit.TypeIssues, unit.TypePullRequests), bind(api.EditMilestoneOption{}), repo.EditMilestone).
 						Delete(reqToken(), reqRepoWriter(unit.TypeIssues, unit.TypePullRequests), repo.DeleteMilestone)
 				})
+				m.Group("/projects", func() {
+					m.Get("", repo.ListRepoProjects)
+					m.Group("/{project_id}", func() {
+						m.Get("/issues", repo.GetProjectIssues)
+					})
+				}, reqToken())
 			}, repoAssignment(), checkTokenPublicOnly())
 		}, tokenRequiresScopes(auth_model.AccessTokenScopeCategoryIssue))
 

@@ -144,6 +144,31 @@
 						</div>
 					</div>
 				</div>
+				<div id="dep-type-section" style="display:none;">
+					<div class="field">
+						<label>{{ctx.Locale.Tr "repo.issues.move_copy_dep_type"}}</label>
+						<div class="grouped fields">
+							<div class="field">
+								<div class="ui radio checkbox">
+									<input type="radio" name="dep_type" value="" checked id="dep-none">
+									<label for="dep-none">{{ctx.Locale.Tr "repo.issues.move_copy_dep_none"}}</label>
+								</div>
+							</div>
+							<div class="field">
+								<div class="ui radio checkbox">
+									<input type="radio" name="dep_type" value="original_blocks_copy" id="dep-orig-blocks">
+									<label for="dep-orig-blocks">{{ctx.Locale.Tr "repo.issues.move_copy_dep_original_blocks"}}</label>
+								</div>
+							</div>
+							<div class="field">
+								<div class="ui radio checkbox">
+									<input type="radio" name="dep_type" value="copy_blocks_original" id="dep-copy-blocks">
+									<label for="dep-copy-blocks">{{ctx.Locale.Tr "repo.issues.move_copy_dep_copy_blocks"}}</label>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
 				<div class="actions">
 					<button class="ui cancel button">{{ctx.Locale.Tr "settings.cancel"}}</button>
 					<button class="ui red button" id="move-copy-submit">{{ctx.Locale.Tr "repo.issues.move_copy_confirm"}}</button>
@@ -161,6 +186,7 @@
 		const submitBtn = document.getElementById('move-copy-submit');
 		const warningMsg = document.getElementById('move-copy-warning-msg');
 		const copyOptions = document.getElementById('copy-options');
+		const depTypeSection = document.getElementById('dep-type-section');
 		const baseLink = '{{.RepoLink}}/issues/accessible-repos';
 		const currentRepo = modal.dataset.currentRepo;
 		let debounceTimer;
@@ -188,9 +214,11 @@
 				if (this.value === 'copy') {
 					form.action = '{{.Issue.Link}}/copy_repo';
 					submitBtn.textContent = modal.dataset.i18nCopy;
+					depTypeSection.style.display = '';
 				} else {
 					form.action = '{{.Issue.Link}}/move_repo';
 					submitBtn.textContent = modal.dataset.i18nMove;
+					depTypeSection.style.display = 'none';
 				}
 			});
 		});

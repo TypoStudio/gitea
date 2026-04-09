@@ -5,6 +5,7 @@
 package repo
 
 import (
+	stdctx "context"
 	"errors"
 	"fmt"
 	"html/template"
@@ -22,6 +23,7 @@ import (
 	"code.gitea.io/gitea/models/unit"
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/htmlutil"
+	issue_indexer "code.gitea.io/gitea/modules/indexer/issues"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/markup/markdown"
 	"code.gitea.io/gitea/modules/optional"
@@ -650,6 +652,39 @@ func attachmentsHTML(ctx *context.Context, attachments []*repo_model.Attachment,
 	return attachHTML
 }
 
+// copyLabelsToIssue copies labels from origLabels to issue in targetRepo.
+// If a label belongs to an org and targetRepo is in the same org, the label is reused directly.
+// Otherwise, finds or creates a matching label in targetRepo.
+func copyLabelsToIssue(ctx stdctx.Context, issue *issues_model.Issue, origLabels []*issues_model.Label, targetRepo *repo_model.Repository) {
+	for _, origLabel := range origLabels {
+		var labelID int64
+		if origLabel.BelongsToOrg() && origLabel.OrgID == targetRepo.OwnerID {
+			// Same org label: reuse directly
+			labelID = origLabel.ID
+		} else {
+			// Repo label or different org: find by name in target repo
+			found, err := issues_model.GetLabelInRepoByName(ctx, targetRepo.ID, origLabel.Name)
+			if err == nil {
+				labelID = found.ID
+			} else {
+				// Not found: create it
+				newLabel := &issues_model.Label{
+					RepoID:      targetRepo.ID,
+					Name:        origLabel.Name,
+					Exclusive:   origLabel.Exclusive,
+					Description: origLabel.Description,
+					Color:       origLabel.Color,
+				}
+				if err := issues_model.NewLabel(ctx, newLabel); err != nil {
+					continue
+				}
+				labelID = newLabel.ID
+			}
+		}
+		_, _ = db.GetEngine(ctx).Insert(&issues_model.IssueLabel{IssueID: issue.ID, LabelID: labelID})
+	}
+}
+
 // MoveIssueToRepo moves an issue to another repository.
 func MoveIssueToRepo(ctx *context.Context) {
 	issue := GetActionIssue(ctx)
@@ -719,19 +754,32 @@ func MoveIssueToRepo(ctx *context.Context) {
 		return
 	}
 
+	var origMilestoneIsOrg bool
+	var origMilestoneOrgID int64
 	if issue.MilestoneID > 0 {
 		origMilestone, err := issues_model.GetMilestoneByRepoID(ctx, issue.RepoID, issue.MilestoneID)
 		if err == nil {
 			origMilestoneName = origMilestone.Name
+			origMilestoneIsOrg = origMilestone.BelongsToOrg()
+			origMilestoneOrgID = origMilestone.OrgID
+		} else if issues_model.IsErrMilestoneNotExist(err) {
+			// Could be an org milestone not found by repo query, try direct lookup
+			var m issues_model.Milestone
+			if has, err2 := db.GetEngine(ctx).ID(issue.MilestoneID).Get(&m); err2 == nil && has {
+				origMilestoneName = m.Name
+				origMilestoneIsOrg = m.BelongsToOrg()
+				origMilestoneOrgID = m.OrgID
+			}
 		}
 	}
 
-	var origProjectTitle string
+	var origProject *project_model.Project
 	if err := issue.LoadProject(ctx); err == nil && issue.Project != nil {
-		origProjectTitle = issue.Project.Title
+		origProject = issue.Project
 	}
 
 	oldRepoID := issue.RepoID
+	oldIndex := issue.Index
 	dbCtx, committer, err := db.TxContext(ctx)
 	if err != nil {
 		ctx.ServerError("TxContext", err)
@@ -754,17 +802,26 @@ func MoveIssueToRepo(ctx *context.Context) {
 		return
 	}
 
+	// Record redirect so the old URL still works
+	if err := issues_model.CreateIssueRedirect(dbCtx, oldRepoID, oldIndex, issue.ID); err != nil {
+		ctx.ServerError("CreateIssueRedirect", err)
+		return
+	}
+
 	// Clear labels (they belong to the old repo)
 	if _, err := db.GetEngine(dbCtx).Where("issue_id = ?", issue.ID).Delete(&issues_model.IssueLabel{}); err != nil {
 		ctx.ServerError("ClearIssueLabels", err)
 		return
 	}
 
-	// Clear milestone
+	// Clear milestone (keep org milestones if same org)
 	if issue.MilestoneID > 0 {
-		if _, err := db.GetEngine(dbCtx).ID(issue.ID).Cols("milestone_id").Update(&issues_model.Issue{MilestoneID: 0}); err != nil {
-			ctx.ServerError("ClearMilestone", err)
-			return
+		keepMilestone := origMilestoneIsOrg && origMilestoneOrgID == newRepo.OwnerID
+		if !keepMilestone {
+			if _, err := db.GetEngine(dbCtx).ID(issue.ID).Cols("milestone_id").Update(&issues_model.Issue{MilestoneID: 0}); err != nil {
+				ctx.ServerError("ClearMilestone", err)
+				return
+			}
 		}
 	}
 
@@ -772,101 +829,6 @@ func MoveIssueToRepo(ctx *context.Context) {
 	if _, err := db.GetEngine(dbCtx).Where("issue_id = ?", issue.ID).Delete(&project_model.ProjectIssue{}); err != nil {
 		ctx.ServerError("ClearProject", err)
 		return
-	}
-
-	// Copy labels to new repo (best-effort)
-	if ctx.FormBool("copy_labels") && len(origLabels) > 0 {
-		for _, origLabel := range origLabels {
-			newLabel, err := issues_model.GetLabelInRepoByName(dbCtx, newRepo.ID, origLabel.Name)
-			if err != nil {
-				// Label not found in target repo, create it
-				newLabel = &issues_model.Label{
-					RepoID:      newRepo.ID,
-					Name:        origLabel.Name,
-					Exclusive:   origLabel.Exclusive,
-					Description: origLabel.Description,
-					Color:       origLabel.Color,
-				}
-				if err := issues_model.NewLabel(dbCtx, newLabel); err != nil {
-					continue // best-effort: skip on error
-				}
-			}
-			if _, err := db.GetEngine(dbCtx).Insert(&issues_model.IssueLabel{
-				IssueID: issue.ID,
-				LabelID: newLabel.ID,
-			}); err != nil {
-				continue // best-effort
-			}
-		}
-	}
-
-	// Copy milestone to new repo (best-effort)
-	if ctx.FormBool("copy_milestone") && origMilestoneName != "" {
-		newMilestone, err := issues_model.GetMilestoneByRepoIDANDName(dbCtx, newRepo.ID, origMilestoneName)
-		if err != nil {
-			// Milestone not found in target repo, create it
-			newMilestone = &issues_model.Milestone{
-				RepoID: newRepo.ID,
-				Name:   origMilestoneName,
-			}
-			if err := issues_model.NewMilestone(dbCtx, newMilestone); err != nil {
-				newMilestone = nil // best-effort: skip on error
-			}
-		}
-		if newMilestone != nil {
-			if _, err := db.GetEngine(dbCtx).ID(issue.ID).Cols("milestone_id").Update(&issues_model.Issue{MilestoneID: newMilestone.ID}); err != nil {
-				// best-effort: ignore
-				_ = err
-			}
-		}
-	}
-
-	// Copy project to new repo (best-effort)
-	if ctx.FormBool("copy_project") && origProjectTitle != "" {
-		// Search for a project with the same title in the new repo
-		var newProjectID int64
-		projects, err := db.Find[project_model.Project](dbCtx, project_model.SearchOptions{
-			RepoID:   newRepo.ID,
-			IsClosed: optional.Some(false),
-			Type:     project_model.TypeRepository,
-		})
-		if err == nil {
-			for _, p := range projects {
-				if p.Title == origProjectTitle {
-					newProjectID = p.ID
-					break
-				}
-			}
-		}
-		if newProjectID == 0 {
-			// Create project in target repo
-			newProject := &project_model.Project{
-				Title:     origProjectTitle,
-				RepoID:    newRepo.ID,
-				CreatorID: ctx.Doer.ID,
-				Type:      project_model.TypeRepository,
-			}
-			if err := project_model.NewProject(dbCtx, newProject); err == nil {
-				newProjectID = newProject.ID
-			}
-		}
-		if newProjectID > 0 {
-			// Get default column
-			newProject, err := project_model.GetProjectByID(dbCtx, newProjectID)
-			if err == nil {
-				defaultColumn, err := newProject.MustDefaultColumn(dbCtx)
-				if err == nil {
-					if _, err := db.GetEngine(dbCtx).Insert(&project_model.ProjectIssue{
-						IssueID:         issue.ID,
-						ProjectID:       newProjectID,
-						ProjectColumnID: defaultColumn.ID,
-					}); err != nil {
-						// best-effort: ignore
-						_ = err
-					}
-				}
-			}
-		}
 	}
 
 	// Decrement old repo issue count
@@ -890,6 +852,95 @@ func MoveIssueToRepo(ctx *context.Context) {
 	if err := committer.Commit(); err != nil {
 		ctx.ServerError("Commit", err)
 		return
+	}
+
+	// Update search index for the moved issue
+	issue_indexer.UpdateIssueIndexer(ctx, issue.ID)
+
+	// Remove subscriptions for users who can't access the new (private) repo
+	if newRepo.IsPrivate {
+		if err := issues_model.RemoveIssueWatchersWithoutRepoAccess(ctx, issue.ID, newRepo.ID, newRepo.OwnerID); err != nil {
+			log.Error("RemoveIssueWatchersWithoutRepoAccess issue[%d]: %v", issue.ID, err)
+		}
+	}
+
+	// Best-effort copy after commit (using ctx, not dbCtx)
+	// Copy labels to new repo
+	if ctx.FormBool("copy_labels") && len(origLabels) > 0 {
+		copyLabelsToIssue(ctx, issue, origLabels, newRepo)
+	}
+
+	// Copy milestone to new repo (skip if org milestone was already kept)
+	keepMilestone := origMilestoneIsOrg && origMilestoneOrgID == newRepo.OwnerID
+	if ctx.FormBool("copy_milestone") && origMilestoneName != "" && !keepMilestone {
+		newMilestone, err := issues_model.GetMilestoneByRepoIDANDName(ctx, newRepo.ID, origMilestoneName)
+		if err != nil {
+			// Milestone not found in target repo, create it
+			newMilestone = &issues_model.Milestone{
+				RepoID: newRepo.ID,
+				Name:   origMilestoneName,
+			}
+			if err := issues_model.NewMilestone(ctx, newMilestone); err != nil {
+				newMilestone = nil // best-effort: skip on error
+			}
+		}
+		if newMilestone != nil {
+			if _, err := db.GetEngine(ctx).ID(issue.ID).Cols("milestone_id").Update(&issues_model.Issue{MilestoneID: newMilestone.ID}); err != nil {
+				// best-effort: ignore
+				_ = err
+			}
+		}
+	}
+
+	// Copy project to new repo
+	if ctx.FormBool("copy_project") && origProject != nil {
+		var targetProjectID int64
+		if origProject.Type == project_model.TypeOrganization && origProject.OwnerID == newRepo.OwnerID {
+			// Same org project: reuse as-is
+			targetProjectID = origProject.ID
+		} else {
+			// Repo project or different org: find by name or create
+			projects, err := db.Find[project_model.Project](ctx, project_model.SearchOptions{
+				RepoID:   newRepo.ID,
+				IsClosed: optional.Some(false),
+				Type:     project_model.TypeRepository,
+			})
+			if err == nil {
+				for _, p := range projects {
+					if p.Title == origProject.Title {
+						targetProjectID = p.ID
+						break
+					}
+				}
+			}
+			if targetProjectID == 0 {
+				newProject := &project_model.Project{
+					Title:     origProject.Title,
+					RepoID:    newRepo.ID,
+					CreatorID: ctx.Doer.ID,
+					Type:      project_model.TypeRepository,
+				}
+				if err := project_model.NewProject(ctx, newProject); err == nil {
+					targetProjectID = newProject.ID
+				}
+			}
+		}
+		if targetProjectID > 0 {
+			targetProject, err := project_model.GetProjectByID(ctx, targetProjectID)
+			if err == nil {
+				defaultColumn, err := targetProject.MustDefaultColumn(ctx)
+				if err == nil {
+					if _, err := db.GetEngine(ctx).Insert(&project_model.ProjectIssue{
+						IssueID:         issue.ID,
+						ProjectID:       targetProjectID,
+						ProjectColumnID: defaultColumn.ID,
+					}); err != nil {
+						// best-effort: ignore
+						_ = err
+					}
+				}
+			}
+		}
 	}
 
 	log.Info("Issue [%d] moved from repo [%d] to repo [%d] by user [%d]", issue.ID, ctx.Repo.Repository.ID, newRepo.ID, ctx.Doer.ID)
@@ -984,6 +1035,95 @@ func CopyIssueToRepo(ctx *context.Context) {
 	if err := committer.Commit(); err != nil {
 		ctx.ServerError("Commit", err)
 		return
+	}
+
+	// Set dependency between original and copied issue (best-effort)
+	depType := ctx.FormString("dep_type")
+	if depType == "original_blocks_copy" {
+		// Original blocks copy: copy (newIssue) depends on original (issue)
+		_ = issues_model.CreateIssueDependency(ctx, ctx.Doer, newIssue, issue)
+	} else if depType == "copy_blocks_original" {
+		// Copy blocks original: original (issue) depends on copy (newIssue)
+		_ = issues_model.CreateIssueDependency(ctx, ctx.Doer, issue, newIssue)
+	}
+
+	// Best-effort: copy labels
+	if ctx.FormBool("copy_labels") {
+		origLabels, err := issues_model.GetLabelsByIssueID(ctx, issue.ID)
+		if err == nil && len(origLabels) > 0 {
+			copyLabelsToIssue(ctx, newIssue, origLabels, newRepo)
+		}
+	}
+
+	// Best-effort: copy milestone
+	if ctx.FormBool("copy_milestone") && issue.MilestoneID > 0 {
+		origMilestone, err := issues_model.GetMilestoneByRepoID(ctx, issue.RepoID, issue.MilestoneID)
+		if err == nil {
+			newMilestone, err := issues_model.GetMilestoneByRepoIDANDName(ctx, newRepo.ID, origMilestone.Name)
+			if err != nil {
+				newMilestone = &issues_model.Milestone{
+					RepoID: newRepo.ID,
+					Name:   origMilestone.Name,
+				}
+				if err := issues_model.NewMilestone(ctx, newMilestone); err != nil {
+					newMilestone = nil
+				}
+			}
+			if newMilestone != nil {
+				_, _ = db.GetEngine(ctx).ID(newIssue.ID).Cols("milestone_id").Update(&issues_model.Issue{MilestoneID: newMilestone.ID})
+			}
+		}
+	}
+
+	// Best-effort: copy project
+	if ctx.FormBool("copy_project") {
+		if err := issue.LoadProject(ctx); err == nil && issue.Project != nil {
+			origProj := issue.Project
+			var targetProjectID int64
+			if origProj.Type == project_model.TypeOrganization && origProj.OwnerID == newRepo.OwnerID {
+				// Same org project: reuse as-is
+				targetProjectID = origProj.ID
+			} else {
+				// Repo project or different org: find by name or create
+				projects, err := db.Find[project_model.Project](ctx, project_model.SearchOptions{
+					RepoID:   newRepo.ID,
+					IsClosed: optional.Some(false),
+					Type:     project_model.TypeRepository,
+				})
+				if err == nil {
+					for _, p := range projects {
+						if p.Title == origProj.Title {
+							targetProjectID = p.ID
+							break
+						}
+					}
+				}
+				if targetProjectID == 0 {
+					newProject := &project_model.Project{
+						Title:     origProj.Title,
+						RepoID:    newRepo.ID,
+						CreatorID: ctx.Doer.ID,
+						Type:      project_model.TypeRepository,
+					}
+					if err := project_model.NewProject(ctx, newProject); err == nil {
+						targetProjectID = newProject.ID
+					}
+				}
+			}
+			if targetProjectID > 0 {
+				targetProject, err := project_model.GetProjectByID(ctx, targetProjectID)
+				if err == nil {
+					defaultColumn, err := targetProject.MustDefaultColumn(ctx)
+					if err == nil {
+						_, _ = db.GetEngine(ctx).Insert(&project_model.ProjectIssue{
+							IssueID:         newIssue.ID,
+							ProjectID:       targetProjectID,
+							ProjectColumnID: defaultColumn.ID,
+						})
+					}
+				}
+			}
+		}
 	}
 
 	log.Info("Issue [%d] copied to repo [%d] as issue [%d] by user [%d]", issue.ID, newRepo.ID, newIssue.ID, ctx.Doer.ID)

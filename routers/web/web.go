@@ -1010,6 +1010,7 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 					m.Post("/initialize", web.Bind(forms.InitializeLabelsForm{}), org.InitializeLabels)
 				})
 
+
 				m.Group("/actions", func() {
 					m.Get("", misc.LocationRedirect("./actions/general"))
 					m.Group("/general", func() {
@@ -1129,6 +1130,22 @@ func registerWebRoutes(m *web.Router, webAuth *AuthMiddleware) {
 		m.Group("", func() {
 			m.Get("/code", user.CodeSearch)
 		}, reqUnitAccess(unit.TypeCode, perm.AccessModeRead, false), individualPermsChecker)
+
+		m.Group("/milestones", func() {
+			m.Get("", org.OrgMilestones)
+			m.Group("", func() {
+				m.Combo("/new").Get(org.NewOrgMilestone).
+					Post(web.Bind(forms.CreateMilestoneForm{}), org.NewOrgMilestonePost)
+				m.Get("/{id}/edit", org.EditOrgMilestone)
+				m.Post("/{id}/edit", web.Bind(forms.CreateMilestoneForm{}), org.EditOrgMilestonePost)
+				m.Post("/{id}/{action}", org.ChangeOrgMilestoneStatus)
+				m.Post("/delete", org.DeleteOrgMilestone)
+			}, reqSignIn, func(ctx *context.Context) {
+				if ctx.Org == nil || !ctx.Org.IsOwner {
+					ctx.NotFound(nil)
+				}
+			})
+		})
 	}, optSignIn, context.UserAssignmentWeb(), context.OrgAssignment(context.OrgAssignmentOptions{}))
 	// end "/{username}/-": packages, projects, code
 

@@ -11,6 +11,8 @@ import (
 type Milestone struct {
 	// ID is the unique identifier for the milestone
 	ID int64 `json:"id"`
+	// OrgID is the organization ID if this is an organization milestone (0 for repo milestones)
+	OrgID int64 `json:"org_id"`
 	// Title is the title of the milestone
 	Title string `json:"title"`
 	// Description provides details about the milestone

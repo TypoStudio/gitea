@@ -1,0 +1,49 @@
+{{template "base/head" .}}
+<div role="main" aria-label="{{.Title}}" class="page-content organization milestones">
+	{{template "org/header" .}}
+	<div class="ui container">
+		{{template "base/alert" .}}
+		<h2 class="ui dividing header">
+			{{if .PageIsEditMilestone}}
+				{{ctx.Locale.Tr "org.milestones.edit"}}
+			{{else}}
+				{{ctx.Locale.Tr "org.milestones.new"}}
+			{{end}}
+		</h2>
+		<form class="ui form" action="{{.Link}}" method="post">
+			{{.CsrfTokenHtml}}
+			<div class="field {{if .Err_Title}}error{{end}}">
+				<label>{{ctx.Locale.Tr "repo.milestones.title"}}</label>
+				<input name="title" placeholder="{{ctx.Locale.Tr "repo.milestones.title"}}" value="{{.title}}" autofocus required maxlength="50">
+			</div>
+			<div class="field {{if .Err_Deadline}}error{{end}}">
+				<label>
+					{{ctx.Locale.Tr "repo.milestones.due_date"}}
+					<a id="milestone-clear-deadline">{{ctx.Locale.Tr "repo.milestones.clear"}}</a>
+				</label>
+				<input type="date" name="deadline" class="tw-w-auto" value="{{.deadline}}" placeholder="{{ctx.Locale.Tr "repo.issues.due_date_form"}}">
+			</div>
+			<div class="field">
+				<label>{{ctx.Locale.Tr "repo.milestones.desc"}}</label>
+				{{$markdownEditorContext := ctx.MiscUtils.MarkdownEditorGeneral $.ContextUser}}
+				{{template "shared/combomarkdowneditor" (dict
+					"MarkdownEditorContext" $markdownEditorContext
+					"TextareaName" "content"
+					"TextareaContent" .content
+					"TextareaPlaceholder" (ctx.Locale.Tr "repo.milestones.desc")
+				)}}
+			</div>
+			<div class="flex-text-block tw-justify-end">
+				<a class="ui basic button" href="{{.MilestoneLink}}">
+					{{ctx.Locale.Tr "repo.milestones.cancel"}}
+				</a>
+				{{if .PageIsEditMilestone}}
+					<button class="ui primary button">{{ctx.Locale.Tr "repo.milestones.modify"}}</button>
+				{{else}}
+					<button class="ui primary button">{{ctx.Locale.Tr "repo.milestones.create"}}</button>
+				{{end}}
+			</div>
+		</form>
+	</div>
+</div>
+{{template "base/footer" .}}

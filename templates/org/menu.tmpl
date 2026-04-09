@@ -20,6 +20,9 @@
 				{{end}}
 			</a>
 			{{end}}
+			<a class="{{if .PageIsViewOrgMilestones}}active {{end}}item" href="{{$.Org.HomeLink}}/-/milestones">
+				{{svg "octicon-milestone"}} {{ctx.Locale.Tr "repo.milestones"}}
+			</a>
 			{{if and .IsPackageEnabled .CanReadPackages}}
 			<a class="{{if .IsPackagesPage}}active {{end}}item" href="{{$.Org.HomeLink}}/-/packages">
 				{{svg "octicon-package"}} {{ctx.Locale.Tr "packages.title"}}

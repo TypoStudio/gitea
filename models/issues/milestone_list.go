@@ -40,6 +40,7 @@ func (milestones MilestoneList) SplitByOpenClosed() (open, closed MilestoneList)
 type FindMilestoneOptions struct {
 	db.ListOptions
 	RepoID   int64
+	OrgID    int64
 	IsClosed optional.Option[bool]
 	Name     string
 	SortType string
@@ -51,6 +52,9 @@ func (opts FindMilestoneOptions) ToConds() builder.Cond {
 	cond := builder.NewCond()
 	if opts.RepoID != 0 {
 		cond = cond.And(builder.Eq{"repo_id": opts.RepoID})
+	}
+	if opts.OrgID != 0 {
+		cond = cond.And(builder.Eq{"org_id": opts.OrgID})
 	}
 	if opts.IsClosed.Has() {
 		cond = cond.And(builder.Eq{"is_closed": opts.IsClosed.Value()})

@@ -299,6 +299,7 @@ func ToLabelList(labels []*issues_model.Label, repo *repo_model.Repository, org 
 func ToAPIMilestone(m *issues_model.Milestone) *api.Milestone {
 	apiMilestone := &api.Milestone{
 		ID:           m.ID,
+		OrgID:        m.OrgID,
 		State:        m.State(),
 		Title:        m.Name,
 		Description:  m.Content,

@@ -43,10 +43,11 @@ func (err ErrMilestoneNotExist) Unwrap() error {
 	return util.ErrNotExist
 }
 
-// Milestone represents a milestone of repository.
+// Milestone represents a milestone of repository or organization.
 type Milestone struct {
 	ID              int64                  `xorm:"pk autoincr"`
 	RepoID          int64                  `xorm:"INDEX"`
+	OrgID           int64                  `xorm:"INDEX DEFAULT 0"`
 	Repo            *repo_model.Repository `xorm:"-"`
 	Name            string
 	Content         string        `xorm:"TEXT"`
@@ -97,6 +98,11 @@ func (m *Milestone) AfterLoad() {
 	}
 }
 
+// BelongsToOrg returns true if this is an organization milestone
+func (m *Milestone) BelongsToOrg() bool {
+	return m.OrgID > 0
+}
+
 // State returns string representation of milestone status.
 func (m *Milestone) State() api.StateType {
 	if m.IsClosed {
@@ -105,13 +111,18 @@ func (m *Milestone) State() api.StateType {
 	return api.StateOpen
 }
 
-// NewMilestone creates new milestone of repository.
+// NewMilestone creates new milestone of repository or organization.
 func NewMilestone(ctx context.Context, m *Milestone) (err error) {
 	return db.WithTx(ctx, func(ctx context.Context) error {
 		m.Name = strings.TrimSpace(m.Name)
 
 		if err = db.Insert(ctx, m); err != nil {
 			return err
+		}
+
+		// Organization milestones don't belong to a repo, skip repo counter update
+		if m.OrgID > 0 {
+			return nil
 		}
 
 		_, err = db.Exec(ctx, "UPDATE `repository` SET num_milestones = num_milestones + 1 WHERE id = ?", m.RepoID)
@@ -160,8 +171,8 @@ func UpdateMilestone(ctx context.Context, m *Milestone, oldIsClosed bool) error 
 			return err
 		}
 
-		// if IsClosed changed, update milestone numbers of repository
-		if oldIsClosed != m.IsClosed {
+		// if IsClosed changed, update milestone numbers of repository (skip for org milestones)
+		if oldIsClosed != m.IsClosed && m.RepoID > 0 {
 			if err := updateRepoMilestoneNum(ctx, m.RepoID); err != nil {
 				return err
 			}
@@ -235,7 +246,14 @@ func changeMilestoneStatus(ctx context.Context, m *Milestone, isClosed bool) err
 		m.ClosedDateUnix = timeutil.TimeStampNow()
 	}
 
-	count, err := db.GetEngine(ctx).ID(m.ID).Where("repo_id = ? AND is_closed = ?", m.RepoID, !isClosed).Cols("is_closed", "closed_date_unix").Update(m)
+	sess := db.GetEngine(ctx).ID(m.ID).Where("is_closed = ?", !isClosed)
+	if m.RepoID > 0 {
+		sess = sess.Where("repo_id = ?", m.RepoID)
+	} else if m.OrgID > 0 {
+		sess = sess.Where("org_id = ?", m.OrgID)
+	}
+
+	count, err := sess.Cols("is_closed", "closed_date_unix").Update(m)
 	if err != nil {
 		return err
 	}
@@ -247,7 +265,10 @@ func changeMilestoneStatus(ctx context.Context, m *Milestone, isClosed bool) err
 		return err
 	}
 
-	return updateRepoMilestoneNum(ctx, m.RepoID)
+	if m.RepoID > 0 {
+		return updateRepoMilestoneNum(ctx, m.RepoID)
+	}
+	return nil
 }
 
 // DeleteMilestoneByRepoID deletes a milestone from a repository.
@@ -327,6 +348,51 @@ func (m *Milestone) LoadTotalTrackedTime(ctx context.Context) error {
 	}
 	m.TotalTrackedTime = totalTime.Time
 	return nil
+}
+
+// GetMilestoneByOrgID returns a specific org milestone by org ID and milestone ID.
+func GetMilestoneByOrgID(ctx context.Context, orgID, id int64) (*Milestone, error) {
+	m := new(Milestone)
+	has, err := db.GetEngine(ctx).ID(id).Where("org_id=?", orgID).Get(m)
+	if err != nil {
+		return nil, err
+	} else if !has {
+		return nil, ErrMilestoneNotExist{ID: id}
+	}
+	return m, nil
+}
+
+// GetMilestoneInOrgByName finds an org milestone by name.
+func GetMilestoneInOrgByName(ctx context.Context, orgID int64, name string) (*Milestone, error) {
+	var mile Milestone
+	has, err := db.GetEngine(ctx).Where("org_id=? AND name=?", orgID, name).Get(&mile)
+	if err != nil {
+		return nil, err
+	}
+	if !has {
+		return nil, ErrMilestoneNotExist{Name: name}
+	}
+	return &mile, nil
+}
+
+// DeleteMilestoneByOrgID deletes a milestone from an organization.
+func DeleteMilestoneByOrgID(ctx context.Context, orgID, id int64) error {
+	m, err := GetMilestoneByOrgID(ctx, orgID, id)
+	if err != nil {
+		if IsErrMilestoneNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	return db.WithTx(ctx, func(ctx context.Context) error {
+		if _, err = db.DeleteByID[Milestone](ctx, m.ID); err != nil {
+			return err
+		}
+
+		_, err = db.Exec(ctx, "UPDATE `issue` SET milestone_id = 0 WHERE milestone_id = ?", m.ID)
+		return err
+	})
 }
 
 // InsertMilestones creates milestones of repository.
